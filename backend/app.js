@@ -7,6 +7,7 @@ const aiRoutes = require("./routes/aiRoutes");
 const adminRoutes = require("./routes/adminRoutes");
 const bookingRoutes = require("./routes/bookingRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
+const { notFound, errorHandler } = require("./middleware/errorHandler");
 const cors = require("cors");
 
 const app = express();
@@ -41,11 +42,13 @@ app.get("/health", (req, res) => {
     });
 });
 // 404 Catch-All
-app.use((req, res) => {
-    res.status(404).json({
-        success: false,
-        message: "Route not found",
-    });
-});
+// app.use((req, res) => {
+//     res.status(404).json({
+//         success: false,
+//         message: "Route not found",
+//     });
+// });
+app.use(notFound);
+app.use(errorHandler);
 
 module.exports = app;

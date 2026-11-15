@@ -1,153 +1,204 @@
 const Booking = require("../models/bookingModel");
 const Show = require("../models/showModel");
 const { emitSeatUpdate } = require("../socket");
+const AppError = require("../utils/appError")
+const asyncHandler = require("../utils/asyncHandler");
 
-const createBooking = async (req, res) => {
-    try {
-        const { showId, seats } = req.body;
+const createBooking = asyncHandler(async (req, res) => {
+    // ...everything inside stays as it is for now...
+    const { showId, seats } = req.body;
 
-        // Step 1: Validate input
-        if (!showId || !seats) {
-            return res.status(400).json({
-                success: false,
-                message: "Show ID and number of seats are required",
-            });
-        }
+    if (!showId || !seats) {
+        throw new AppError("Show ID and number of seats are required", 400);
+    }
+    if (seats < 1) {
+        throw new AppError("Must book at least 1 seat", 400);
+    }
+    if (seats > 10) {
+        throw new AppError("You can book at most 10 seats at a time", 400);
+    }
 
-        if (seats < 1) {
-            return res.status(400).json({
-                success: false,
-                message: "Must book at least 1 seat",
-            });
-        }
+    const show = await Show.findById(showId);
+    if (!show) {
+        throw new AppError("Show not found", 404);
+    }
+    if (!show.isActive) {
+        throw new AppError("This show is not currently available for booking", 400);
+    }
 
-        // Step 2: Find the show
-        const show = await Show.findById(showId);
+    // Step 4: Atomic seat check and decrement
+    const updatedShow = await Show.findOneAndUpdate(
+        {
+            _id: showId,
+            availableSeats: { $gte: seats },
+        },
+        {
+            $inc: { availableSeats: -seats },
+        },
+        { new: true }
+    );
 
-        if (!show) {
-            return res.status(404).json({
-                success: false,
-                message: "Show not found",
-            });
-        }
+    if (!updatedShow) {
+        throw new AppError("Not enough seats available. Only " + show.availableSeats + " seats left.", 400);
+    }
 
-        // Step 3: Check if show is active
-        if (!show.isActive) {
-            return res.status(400).json({
-                success: false,
-                message: "This show is not currently available for booking",
-            });
-        }
+    // Tell everyone watching this show that seats just dropped
+    emitSeatUpdate(updatedShow);
 
-        // Step 4: Atomic seat check and decrement
-        const updatedShow = await Show.findOneAndUpdate(
-            {
-                _id: showId,
-                availableSeats: { $gte: seats },
-            },
-            {
-                $inc: { availableSeats: -seats },
-            },
-            { new: true }
+    // Step 5: Calculate total price
+    const totalPrice = seats * show.ticketPrice;
+
+    // Step 6: Create the booking
+    const booking = await Booking.create({
+        show: showId,
+        user: req.user.userId,
+        seats,
+        totalPrice,
+        status: "pending",
+    });
+    res.status(201).json({
+        success: true,
+        message: "Booking created successfully. Proceed to payment.",
+        data: booking,
+    });
+});
+// const createBooking = async (req, res) => {
+//     try {
+//         const { showId, seats } = req.body;
+
+//         // Step 1: Validate input
+//         if (!showId || !seats) {
+//             return res.status(400).json({
+//                 success: false,
+//                 message: "Show ID and number of seats are required",
+//             });
+//         }
+
+//         if (seats < 1) {
+//             return res.status(400).json({
+//                 success: false,
+//                 message: "Must book at least 1 seat",
+//             });
+//         }
+//         // Riya's ticket: no more than 10 seats in one booking
+//         if (seats > 10) {
+//             return res.status(400).json({
+//                 success: false,
+//                 message: "You can book at most 10 seats at a time",
+//             });
+//         }
+
+//         // Step 2: Find the show
+//         const show = await Show.findById(showId);
+
+//         if (!show) {
+//             return res.status(404).json({
+//                 success: false,
+//                 message: "Show not found",
+//             });
+//         }
+
+//         // Step 3: Check if show is active
+//         if (!show.isActive) {
+//             return res.status(400).json({
+//                 success: false,
+//                 message: "This show is not currently available for booking",
+//             });
+//         }
+
+//         // Step 4: Atomic seat check and decrement
+//         const updatedShow = await Show.findOneAndUpdate(
+//             {
+//                 _id: showId,
+//                 availableSeats: { $gte: seats },
+//             },
+//             {
+//                 $inc: { availableSeats: -seats },
+//             },
+//             { new: true }
+//         );
+
+//         if (!updatedShow) {
+//             return res.status(400).json({
+//                 success: false,
+//                 message: "Not enough seats available. Only " + show.availableSeats + " seats left.",
+//             });
+//         }
+
+//         // Tell everyone watching this show that seats just dropped
+//         emitSeatUpdate(updatedShow);
+
+//         // Step 5: Calculate total price
+//         const totalPrice = seats * show.ticketPrice;
+
+//         // Step 6: Create the booking
+//         const booking = await Booking.create({
+//             show: showId,
+//             user: req.user.userId,
+//             seats,
+//             totalPrice,
+//             status: "pending",
+//         });
+//         res.status(201).json({
+//             success: true,
+//             message: "Booking created successfully. Proceed to payment.",
+//             data: booking,
+//         });
+//     } catch (err) {
+//         res.status(500).json({
+//             success: false,
+//             message: "Something went wrong",
+//         });
+//     }
+// };
+const cancelBooking = asyncHandler(async (req, res) => {
+    const booking = await Booking.findById(req.params.id);
+
+    if (!booking) {
+        throw new AppError("Booking not found", 404);
+    }
+
+    // Only the user who made the booking can cancel it
+    if (booking.user.toString() !== req.user.userId) {
+        throw new AppError("You can only cancel your own bookings", 403);
+    }
+
+    if (booking.status === "cancelled") {
+        throw new AppError("Booking is already cancelled", 400);
+    }
+    if (booking.stripePaymentIntentId) {
+        const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+        const intent = await stripe.paymentIntents.retrieve(
+            booking.stripePaymentIntentId
         );
 
-        if (!updatedShow) {
-            return res.status(400).json({
-                success: false,
-                message: "Not enough seats available. Only " + show.availableSeats + " seats left.",
-            });
+        if (intent.status === "succeeded") {
+            await stripe.refunds.create({ payment_intent: booking.stripePaymentIntentId });
+        } else if (intent.status === "processing") {
+            throw new AppError("Payment is still processing. Please try again shortly.", 400);
+        } else if (intent.status !== "canceled") {
+            await stripe.paymentIntents.cancel(booking.stripePaymentIntentId);
         }
-
-        // Tell everyone watching this show that seats just dropped
-        emitSeatUpdate(updatedShow);
-
-        // Step 5: Calculate total price
-        const totalPrice = seats * show.ticketPrice;
-
-        // Step 6: Create the booking
-        const booking = await Booking.create({
-            show: showId,
-            user: req.user.userId,
-            seats,
-            totalPrice,
-            status: "pending",
-        });
-        res.status(201).json({
-            success: true,
-            message: "Booking created successfully. Proceed to payment.",
-            data: booking,
-        });
-    } catch (err) {
-        res.status(500).json({
-            success: false,
-            message: "Something went wrong",
-        });
     }
-};
-const cancelBooking = async (req, res) => {
-    try {
-        const booking = await Booking.findById(req.params.id);
 
-        if (!booking) {
-            return res.status(404).json({
-                success: false,
-                message: "Booking not found",
-            });
-        }
+    // Restore seats to the show
+    const restoredShow = await Show.findByIdAndUpdate(
+        booking.show,
+        { $inc: { availableSeats: booking.seats } },
+        { new: true }
+    );
+    emitSeatUpdate(restoredShow);
 
-        // Only the user who made the booking can cancel it
-        if (booking.user.toString() !== req.user.userId) {
-            return res.status(403).json({
-                success: false,
-                message: "You can only cancel your own bookings",
-            });
-        }
+    // Update booking status
+    booking.status = "cancelled";
+    await booking.save();
 
-        if (booking.status === "cancelled") {
-            return res.status(400).json({
-                success: false,
-                message: "Booking is already cancelled",
-            });
-        }
-        if (booking.stripePaymentIntentId) {
-            const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-            const intent = await stripe.paymentIntents.retrieve(
-                booking.stripePaymentIntentId
-            );
-
-            if (intent.status === "succeeded") {
-                await stripe.refunds.create({ payment_intent: booking.stripePaymentIntentId });
-            } else if (intent.status === "processing") {
-                return res.status(400).json({ success: false, message: "Payment is still processing. Please try again shortly." });
-            } else if (intent.status !== "canceled") {
-                await stripe.paymentIntents.cancel(booking.stripePaymentIntentId);
-            }
-        }
-
-        // Restore seats to the show
-        const restoredShow = await Show.findByIdAndUpdate(
-            booking.show,
-            { $inc: { availableSeats: booking.seats } },
-            { new: true }
-        );
-        emitSeatUpdate(restoredShow);
-
-        // Update booking status
-        booking.status = "cancelled";
-        await booking.save();
-
-        res.status(200).json({
-            success: true,
-            message: "Booking cancelled successfully. Seats have been restored.",
-            data: booking,
-        });
-    } catch (err) {
-        res.status(500).json({
-            success: false,
-            message: "Something went wrong",
-        });
-    }
-};
+    res.status(200).json({
+        success: true,
+        message: "Booking cancelled successfully. Seats have been restored.",
+        data: booking,
+    });
+});
 const getBookingsByUser = async (req, res) => {
     try {
         const bookings = await Booking.find({ user: req.user.userId })
