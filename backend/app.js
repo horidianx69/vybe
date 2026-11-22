@@ -10,6 +10,8 @@ const paymentRoutes = require("./routes/paymentRoutes");
 const { notFound, errorHandler } = require("./middleware/errorHandler");
 const cors = require("cors");
 const helmet = require("helmet");
+const morgan = require("morgan");
+const mongoose = require("mongoose");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -21,12 +23,17 @@ app.use(
         origin: process.env.CLIENT_URL || "http://localhost:5173",
     })
 );
-app.use((req, res, next) => {
-    console.log(
-        `${req.method} ${req.url} - ${new Date().toISOString()}`
-    );
-    next();
-});
+// A reset link carries a secret token in its URL: never write it to the logs
+morgan.token("safe-url", (req) =>
+    req.originalUrl.startsWith("/api/auth/reset-password/")
+        ? "/api/auth/reset-password/[hidden]"
+        : req.originalUrl
+);
+
+// One line per request, with how long the server took to answer
+if (process.env.NODE_ENV !== "test") {
+    app.use(morgan(":method :safe-url :status :response-time ms"));
+}
 app.use("/api/auth", authRoutes);
 app.use("/api/movies", movieRoutes);
 app.use("/api/theatres", theatreRoutes);
@@ -38,9 +45,13 @@ app.use("/api/payments", paymentRoutes);
 
 // Health Check
 app.get("/health", (req, res) => {
-    res.status(200).json({
-        success: true,
-        message: "VYBE server is healthy",
+    // 1 means connected. 0, 2 and 3 mean disconnected, connecting and disconnecting.
+    const dbUp = mongoose.connection.readyState === 1;
+
+    res.status(dbUp ? 200 : 503).json({
+        success: dbUp,
+        db: dbUp ? "up" : "down",
+        uptime: Math.round(process.uptime()),
     });
 });
 // 404 Catch-All

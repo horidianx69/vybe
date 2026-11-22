@@ -37,6 +37,9 @@ const bookingSchema = new mongoose.Schema(
     }
 );
 
+// My Bookings asks: this user's bookings, newest first. The index answers that directly.
+bookingSchema.index({ user: 1, createdAt: -1 });
+
 const Booking = mongoose.model("Booking", bookingSchema);
 
 module.exports = Booking;
