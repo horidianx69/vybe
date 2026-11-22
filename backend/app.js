@@ -9,10 +9,12 @@ const bookingRoutes = require("./routes/bookingRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
 const { notFound, errorHandler } = require("./middleware/errorHandler");
 const cors = require("cors");
+const helmet = require("helmet");
 
 const app = express();
-
+app.set("trust proxy", 1);
 // Middleware
+app.use(helmet());
 app.use(express.json());
 app.use(
     cors({

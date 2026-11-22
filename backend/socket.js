@@ -1,5 +1,6 @@
 const { Server } = require("socket.io");
 const mongoose = require("mongoose");
+const jwt = require("jsonwebtoken");
 
 let io;
 
@@ -13,10 +14,32 @@ const initSocket = (server) => {
         cors: { origin: process.env.CLIENT_URL || "http://localhost:5173" },
     });
 
+    // Runs once per connection, before "connection" fires: the gate check
+    io.use((socket, next) => {
+        const token = socket.handshake.auth.token;
+
+        // No token: a guest. Guests may listen to public events like the booking toast.
+        if (!token) {
+            socket.user = null;
+            return next();
+        }
+
+        try {
+            socket.user = jwt.verify(token, process.env.JWT_SECRET);
+            next();
+        } catch (err) {
+            // A bad or expired token is treated as a guest
+            socket.user = null;
+            next();
+        }
+    });
+
     io.on("connection", (socket) => {
         console.log("Client connected:", socket.id);
 
         socket.on("join-show", (showId) => {
+            // Live seats and viewers are for logged-in users only
+            if (!socket.user) return;
             // Never trust the client: only real show ids may name a room
             if (!mongoose.isObjectIdOrHexString(showId)) return;
             const room = roomFor(showId);

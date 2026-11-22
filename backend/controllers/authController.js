@@ -146,39 +146,38 @@ const forgotPassword = async (req, res) => {
         const { email } = req.body;
 
         const user = await User.findOne({ email });
-        if (!user) {
-            return res.status(404).json({
-                success: false,
-                message: "No account found with that email",
-            });
-        }
 
-        const resetToken = crypto.randomBytes(32).toString("hex");
-        user.resetPasswordToken = crypto
-            .createHash("sha256")
-            .update(resetToken)
-            .digest("hex");
-        user.resetPasswordExpiry = Date.now() + 15 * 60 * 1000;
-        await user.save();
+        // Only a real account gets a token and an email
+        if (user) {
+            const resetToken = crypto.randomBytes(32).toString("hex");
+            user.resetPasswordToken = crypto
+                .createHash("sha256")
+                .update(resetToken)
+                .digest("hex");
+            user.resetPasswordExpiry = Date.now() + 15 * 60 * 1000;
+            await user.save();
 
-        const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
-        const resetUrl = `${clientUrl}/reset-password/${resetToken}`;
+            const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
+            const resetUrl = `${clientUrl}/reset-password/${resetToken}`;
 
-        await sendEmail({
-            to: user.email,
-            subject: "VYBE - Password Reset",
-            html: `
+            // No await: sendEmail catches its own errors, and the response should not wait for SMTP
+            sendEmail({
+                to: user.email,
+                subject: "VYBE - Password Reset",
+                html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #18181b; color: #f4f4f5; padding: 32px; border-radius: 12px;">
           <h1 style="color: #8B7CFF;">Password Reset</h1>
           <p style="color: #a1a1aa;">Click the link below to set a new password. This link expires in 15 minutes.</p>
           <a href="${resetUrl}" style="display: inline-block; background: #8B7CFF; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; margin-top: 16px;">Reset Password</a>
         </div>
       `,
-        });
+            });
+        }
 
+        // The same answer whether or not the account exists
         return res.status(200).json({
             success: true,
-            message: "Password reset email sent",
+            message: "If an account exists for this email, we have sent a reset link.",
         });
     } catch (error) {
         console.error("Forgot password error:", error);
