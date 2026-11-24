@@ -1,4 +1,8 @@
 const Movie = require("../models/movieModel");
+const { getCache, setCache, clearCache } = require("../utils/cache");
+
+// One key for the whole movie list
+const MOVIES_KEY = "movies:all";
 
 // Create a movie (Admin only)
 const createMovie = async (req, res) => {
@@ -22,6 +26,7 @@ const createMovie = async (req, res) => {
             poster,
         });
 
+        await clearCache(MOVIES_KEY);
         res.status(201).json({
             success: true,
             message: "Movie created successfully",
@@ -38,8 +43,21 @@ const createMovie = async (req, res) => {
 // Get all movies (Public)
 const getAllMovies = async (req, res) => {
     try {
-        const movies = await Movie.find();
+        // 1. Look in Redis first
+        const cached = await getCache(MOVIES_KEY);
+        if (cached) {
+            res.set("X-Cache", "HIT");
+            return res.status(200).json({
+                success: true,
+                message: "Movies fetched successfully",
+                data: cached,
+            });
+        }
 
+        // 2. Not there: ask MongoDB, then keep a copy for 5 minutes
+        const movies = await Movie.find();
+        await setCache(MOVIES_KEY, movies, 300);
+        res.set("X-Cache", "MISS");
         res.status(200).json({
             success: true,
             message: "Movies fetched successfully",
@@ -93,6 +111,7 @@ const updateMovie = async (req, res) => {
             });
         }
 
+        await clearCache(MOVIES_KEY);
         res.status(200).json({
             success: true,
             message: "Movie updated successfully",
@@ -118,6 +137,7 @@ const deleteMovie = async (req, res) => {
             });
         }
 
+        await clearCache(MOVIES_KEY);
         res.status(200).json({
             success: true,
             message: "Movie deleted successfully",
