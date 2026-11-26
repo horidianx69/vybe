@@ -90,6 +90,10 @@ const Movies = () => {
                         </button>
                     </div>
 
+                    {searchResult.mode === "keyword" && (
+                        <p className="text-amber-400 text-sm mb-4">{searchResult.message}</p>
+                    )}
+
                     {searchResult.data.length === 0 ? (
                         <p className="text-zinc-400">No matching shows found.</p>
                     ) : (

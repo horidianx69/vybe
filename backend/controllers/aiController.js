@@ -2,8 +2,27 @@ const Groq = require("groq-sdk");
 const Show = require("../models/showModel");
 const Movie = require("../models/movieModel");
 const Booking = require("../models/bookingModel");
+const { parseFilters, escapeRegex } = require("../utils/searchFilters");
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+// Stop waiting after 5 seconds, and try again only once
+const groq = new Groq({
+    apiKey: process.env.GROQ_API_KEY,
+    timeout: 5000,
+    maxRetries: 1,
+});
+
+// Plan B when the AI cannot help: match the user's words against movie titles and genres
+const keywordSearch = async (query) => {
+    const words = query.split(" ").filter((word) => word.length >= 3).map(escapeRegex);
+    if (words.length === 0) return [];
+
+    const pattern = new RegExp(words.join("|"), "i");
+    const movies = await Movie.find({ $or: [{ title: pattern }, { genre: pattern }] }, "_id");
+
+    return Show.find({ isActive: true, movie: { $in: movies.map((m) => m._id) } })
+        .populate("movie", "title genre language rating poster")
+        .populate("theatre", "name address");
+};
 
 const searchShows = async (req, res) => {
     try {
@@ -16,18 +35,29 @@ const searchShows = async (req, res) => {
             });
         }
 
+        if (query.length > 200) {
+            return res.status(400).json({
+                success: false,
+                message: "Search query must be 200 characters or fewer",
+            });
+        }
+
         // Step 1: Get all available movies for context
         const availableMovies = await Movie.find({}, "title genre language");
 
-        // Step 2: Send to Groq for filter extraction
-        const today = new Date().toISOString().split("T")[0];
+        let filters = null;
+        const startedAt = Date.now();
+        try {
+            // Step 2: Send to Groq for filter extraction
+            const today = new Date().toISOString().split("T")[0];
 
-        const chatResponse = await groq.chat.completions.create({
-            model: "openai/gpt-oss-20b",
-            messages: [
-                {
-                    role: "system",
-                    content: `You are a search filter extraction assistant for a movie booking platform.
+            const chatResponse = await groq.chat.completions.create({
+                model: process.env.GROQ_MODEL,
+                response_format: { type: "json_object" },
+                messages: [
+                    {
+                        role: "system",
+                        content: `You are a search filter extraction assistant for a movie booking platform.
 Given a natural language search query, extract structured filters as JSON.
 
 Available movies in the database:
@@ -50,28 +80,28 @@ Query: "shows after 6pm" -> {"timeFrom": "18:00"}
 Query: "Inception shows" -> {"movieTitle": "Inception"}
 
 Return ONLY the JSON object. No explanation. No markdown. No code blocks.`,
-                },
-                {
-                    role: "user",
-                    content: query,
-                },
-            ],
-            temperature: 0.1,
-        });
+                    },
+                    {
+                        role: "user",
+                        content: query,
+                    },
+                ],
+                temperature: 0.1,
+            });
+            // console.log("AI replied:", chatResponse.choices[0].message.content);
 
-        // Step 3: Parse the AI response
-        const aiText = chatResponse.choices[0].message.content.trim();
-        let filters;
+            // Step 3: Keep only the filters that pass the schema
+            filters = parseFilters(chatResponse.choices[0].message.content);
+        } catch (err) {
+            console.log(`AI search failed after ${Date.now() - startedAt} ms: ${err.message}`);
+        }
 
-        try {
-            filters = JSON.parse(aiText);
-        } catch (parseErr) {
+        if (!filters) {
             return res.status(200).json({
                 success: true,
-                message: "Could not interpret the search query. Showing all shows.",
-                data: await Show.find({ isActive: true })
-                    .populate("movie", "title genre language rating poster")
-                    .populate("theatre", "name address"),
+                mode: "keyword",
+                message: `AI search could not help with this one. Showing title and genre matches for "${query}".`,
+                data: await keywordSearch(query),
             });
         }
 
@@ -88,7 +118,7 @@ Return ONLY the JSON object. No explanation. No markdown. No code blocks.`,
         }
 
         if (filters.movieTitle) {
-            movieFilter.title = { $regex: filters.movieTitle, $options: "i" };
+            movieFilter.title = { $regex: escapeRegex(filters.movieTitle), $options: "i" };
         }
 
         // If we have movie filters, find matching movie IDs first
@@ -120,6 +150,7 @@ Return ONLY the JSON object. No explanation. No markdown. No code blocks.`,
 
         res.status(200).json({
             success: true,
+            mode: "ai",
             message: "Shows fetched successfully",
             filters: filters,
             data: filteredShows,
@@ -195,7 +226,7 @@ const getRecommendations = async (req, res) => {
         }
 
         const chatResponse = await groq.chat.completions.create({
-            model: "openai/gpt-oss-20b",
+            model: process.env.GROQ_MODEL,
             messages: [
                 {
                     role: "system",

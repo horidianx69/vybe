@@ -203,8 +203,6 @@ const verifyPayment = async (req, res) => {
         </div>
       `,
         });
-
-
         return res.status(200).json({
             success: true,
             message: "Payment verified and booking confirmed",
